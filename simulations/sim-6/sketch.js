@@ -8,12 +8,19 @@ let rows;
 
 let strengthDivider;
 
+let jetArr = [];
+
 
 function setup() {
     createCanvas(1280,720);
     
     // set wind
     wind = createVector(0.1,0);
+
+    // set jet!
+    for(let i=0; i<width; i++) {
+        jetArr[i] = height/2;
+    }
 
     // add particles
     for(let i=0; i<1000; i++) {
@@ -49,20 +56,25 @@ function draw() {
     //let p = new particle();
     //particles.push(p);
 
-    wind.setMag(random(0.02, 2));
+    //wind.setMag(random(0.02, 2));
+    wind.setMag(1);
 
     // repellers
     for(let i=0; i<repellers.length; i++) {
         repellers[i].show();
     }
 
-    fill(0,17);
+    fill(0,10);
     rect(0,0,width,height);
 
     // particles
     for(let i=particles.length-1; i>=0; i--) {
 
-        particles[i].applyForce(wind);
+        ///particles[i].applyForce(wind);
+
+        // calculate how much wind based on distance from jet
+        let w = particles[i].calculateWind(wind);
+        particles[i].applyForce(w);
 
         for(let j=0; j<repellers.length; j++) {
             let force = repellers[j].repel(particles[i]);
@@ -70,16 +82,19 @@ function draw() {
         }
 
         particles[i].checkEdges();
-        
-        
         particles[i].update();
         let s = particles[i].separate(particles);
         particles[i].applyForce(s);
         particles[i].show();
         
-        //if(particles[i].finished()) {
-            //particles.splice(i,1); 
-        //}
+    }
+
+    // jet
+    jetArr.pop();
+    jetArr.unshift(mouseY);
+    for(let i=0; i<jetArr.length; i++) {
+        stroke(0,153,255);
+        point(i, jetArr[i]);
     }
     
 }
@@ -96,14 +111,13 @@ class particle {
         this.alpha = 255;
         this.size = random(8,32);
         //
-        //this.position = createVector(random(width),random(height));
-        this.position = createVector(width/2,height/2+random(-50,50));
-        this.prevPosition = this.position.copy();
+        this.position = createVector(random(width),random(height));
+        this.prevPosition = this.position;
         let rx = random(-1,1);
         if(rx == 0) { rx = 1};
         this.velocity = createVector(0,0);
         this.acceleration = createVector(0,0);
-        this.mass = random(1,3);
+        this.mass = 3;//random(1,3);
         
     }
 
@@ -114,7 +128,7 @@ class particle {
     }
 
     separate(ps) {
-        let sepDist = 30.0;
+        let sepDist = 16.0;
         let steer = createVector(0,0);
         let count = 0;
 
@@ -141,30 +155,35 @@ class particle {
         return steer;
     }
 
+
     update() {
-        this.prevPosition = this.position.copy();
         //this.x += this.vx;
         //this.y += this.vy;
         //this.alpha -= 5;
         this.velocity.add(this.acceleration);
         
         //this.velocity.limit(3); // limit the velocity this was the value
-        this.velocity.mult(0.92); // new line instead of limit
+        this.velocity.mult(0.9); // new line instead of limit
         this.position.add(this.velocity);
         this.acceleration.mult(0);
 
+    }
+
+    calculateWind(v) {
+        let w = v.copy();
+        let d = dist(this.position.x, this.position.y, this.position.x, jetArr[round(this.position.x)]);
+        let f = (height-d)/height;
+        f *= f*3;
+        w.mult(f);
+        //console.log(round(d));
+        return w;
     }
 
     show() {
         fill(255,this.alpha);
         noStroke();
         //stroke(255,this.alpha);
-        //ellipse(this.position.x, this.position.y, this.mass );
-        //
-        stroke(255);
-        noFill();
-        line(this.position.x, this.position.y, this.prevPosition.x,this.prevPosition.y);
-        
+        ellipse(this.position.x, this.position.y, this.mass );
     }
 
     finished() {
@@ -174,28 +193,51 @@ class particle {
     checkEdges() {
         if(this.position.x > width) {
             //this.position = createVector(random(width),random(height));
-            this.position = createVector(0,random(height));
-            this.velocity.mult(0);
-            this.prevPosition = this.position.copy();
+            //this.position = createVector(0,random(height));
+            //this.position = createVector(0,jetArr[0]+random(-50,50));
+            //this.velocity.mult(0);
+            //this.prevPosition = this.position;
+            this.resetPosition();
         }
         else if(this.position.x < 0) {
             //this.position = createVector(random(width),random(height));
-            this.position = createVector(0,random(height));
-            this.velocity.mult(0);
-            this.prevPosition = this.position.copy();
+            //this.position = createVector(0,random(height));
+            //this.position = createVector(0,jetArr[0]+random(-50,50));
+            //this.velocity.mult(0);
+            //this.prevPosition = this.position;
+            this.resetPosition();
         }
         else if(this.position.y > height) {
             //this.position = createVector(random(width),random(height));
-            this.position = createVector(0,random(height));
-            this.velocity.mult(0);
-            this.prevPosition = this.position.copy();
+            //this.position = createVector(0,random(height));
+            //this.position = createVector(0,jetArr[0]+random(-50,50));
+            //this.velocity.mult(0);
+            //this.prevPosition = this.position;
+            this.resetPosition();
         }
         else if(this.position.y > height) {
             //this.position = createVector(random(width),random(height));
-            this.position = createVector(0,random(height));
-            this.velocity.mult(0);
-            this.prevPosition = this.position.copy();
+            //this.position = createVector(0,random(height));
+            //this.position = createVector(0,jetArr[0]+random(-50,50));
+            //this.velocity.mult(0);
+            //this.prevPosition = this.position;
+            this.resetPosition();
         }
+    }
+
+    resetPosition() {
+
+        let r = random(0,1);
+
+        if(r < 0.3) {
+            this.position = createVector(random(width),random(height));
+        } else if(r > 0.9) {
+            this.position = createVector(0,random(height));
+        } else {
+            this.position = createVector(0,jetArr[0]+random(-80,80));
+        }
+        this.velocity.mult(0);
+            this.prevPosition = this.position;
     }
 }
 
