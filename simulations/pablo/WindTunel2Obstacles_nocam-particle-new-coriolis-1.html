@@ -1,0 +1,1227 @@
+<!DOCTYPE html>
+<html>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <head>
+    <title>Wind Tunel Simulation</title>
+    <style>
+      body {
+        font-family: verdana;
+        font-size: 15px;
+      }
+      .button {
+        background-color: #606060;
+        border: none;
+        color: white;
+        padding: 10px 10px;
+        font-size: 16px;
+        margin: 4px 2px;
+        cursor: pointer;
+      }
+      .slider {
+        -webkit-appearance: none;
+        width: 80px;
+        height: 6px;
+        border-radius: 5px;
+        background: #d3d3d3;
+        outline: none;
+        opacity: 0.7;
+        -webkit-transition: 0.2s;
+        transition: opacity 0.2s;
+      }
+    </style>
+  </head>
+
+  <body>
+    <!-- <img id="pipe" src="http://localhost:8090/" width="1280"> -->
+
+    <input
+      type="checkbox"
+      id="streamButton"
+      onclick="scene.showStreamlines = !scene.showStreamlines"
+    />Streamlines
+    <input
+      type="checkbox"
+      id="velocityButton"
+      onclick="scene.showVelocities = !scene.showVelocities"
+    />Velocities
+    <input
+      type="checkbox"
+      name="field"
+      id="pressureButton"
+      onclick="scene.showPressure = !scene.showPressure;"
+    />
+    Pressure
+    <input
+      type="checkbox"
+      name="field"
+      id="smokeButton"
+      onclick="scene.showSmoke = !scene.showSmoke;"
+      checked
+    />Smoke
+    <input
+      type="checkbox"
+      id="overrelaxButton"
+      onclick="scene.overRelaxation = scene.overRelaxation == 1.0 ? 1.9 : 1.0"
+      checked
+    />Overrelax
+    <br />
+    <canvas id="myCanvas" style="border: 2px solid"></canvas>
+
+    <script>
+      const offscreen = new OffscreenCanvas(128, 72);
+      const img = new Image(); // Create new img element
+      img.crossOrigin = "Anonymous"; // essential to make it accessible
+
+      window.addEventListener("load", offDraw);
+
+      function offDraw() {
+        img.src = "emptycamerafeed.png"; //"http://localhost:8090/"; //"challengeblocktest-04.png"; //"depth-crop.png"; //"http://localhost:8090/";
+      }
+
+      let obsThreshold = 200;
+      let myTimer = 0;
+      let myElapsed = 100;
+
+      var canvas = document.getElementById("myCanvas");
+      var c = canvas.getContext("2d");
+      canvas.width = 1280; //window.innerWidth - 20;
+      canvas.height = 720; //window.innerHeight - 100;
+
+      canvas.focus();
+
+      var simHeight = 1.0;
+      var cScale = 720; //canvas.height / simHeight; // 720
+      var simWidth = 1.77778; //canvas.width / cScale; // 1.77778
+      console.log("simHeight", simHeight);
+      console.log("cScale", cScale);
+      console.log("simWidth", simWidth);
+
+      var U_FIELD = 0;
+      var V_FIELD = 1;
+      var S_FIELD = 2;
+
+      var cnt = 0;
+
+      class Particle {
+        constructor() {
+          this.x = Math.random() * 128;
+          this.y = 30 + Math.random() * 12;
+          this.life = 8000 + Math.random() * 400;
+        }
+
+        display(c) {
+          var x3 = this.x * f.h;
+          var y3 = this.y * f.h;
+          //
+          var u3 = f.sampleField(x3, y3, U_FIELD);
+          var v3 = f.sampleField(x3, y3, V_FIELD);
+          //
+          //
+          c.beginPath();
+          c.moveTo(cX(x3), cY(y3));
+          x3 += u3 * 0.01; //0.01; //old correct value
+          y3 += v3 * 0.01; //0.01; //old correct value
+          c.lineTo(cX(x3), cY(y3));
+          this.x = x3 / f.h; //cX(x2);
+          this.y = y3 / f.h; //cY(y2);
+          c.strokeStyle = "white"; //"MediumSpringGreen";
+          c.lineWidth = 3;
+          c.stroke();
+          //
+          /*c.beginPath();
+        c.rect(cX(x3), cY(y3),4,4);
+        c.fillStyle = "dark blue";
+        c.fill();
+        */
+        }
+
+        checkEdges() {
+          if (this.x > 128 || this.x < 0 || this.y > 72 || this.y < 0) {
+            this.x = 0; //Math.random()*8;
+            this.y = 30 + Math.random() * 12;
+            this.life = 8000 + Math.random() * 400;
+          }
+
+          this.life--;
+          if (this.life <= 0) {
+            this.x = 0; //Math.random()*128;
+            this.y = 30 + Math.random() * 12;
+            this.life = 8000 + Math.random() * 400;
+          }
+        }
+      }
+
+      let myParticle = new Particle();
+      let allParticles = [];
+
+      for (let i = 0; i < 5000; i++) {
+        let p = new Particle();
+        allParticles.push(p);
+      }
+
+      function cX(x) {
+        return x * cScale;
+      }
+
+      function cY(y) {
+        return canvas.height - y * cScale;
+      }
+
+      // ----------------- start of simulator ------------------------------
+
+      class rect {
+        constructor(x, y, w, h) {
+          this.x = x;
+          this.y = y;
+          this.w = w;
+          this.h = h;
+        }
+        isInside(x, y) {
+          return (
+            x >= this.x &&
+            x <= this.x + this.w &&
+            y <= this.y &&
+            y >= this.y - this.h
+          );
+        }
+      }
+
+      class Fluid {
+        constructor(density, numX, numY, h) {
+          this.density = density;
+          this.numX = numX; // + 2; // don't add to the grid!
+          this.numY = numY; // + 2; // don't add to the grid!
+          this.numCells = this.numX * this.numY;
+          this.h = h;
+          this.u = new Float32Array(this.numCells);
+          this.v = new Float32Array(this.numCells);
+          this.newU = new Float32Array(this.numCells);
+          this.newV = new Float32Array(this.numCells);
+          this.p = new Float32Array(this.numCells);
+          this.s = new Float32Array(this.numCells);
+          this.m = new Float32Array(this.numCells);
+          this.newM = new Float32Array(this.numCells);
+          this.m.fill(1.0);
+          var num = numX * numY;
+        }
+
+        integrate(dt, gravity) {
+          var n = this.numY;
+          for (var i = 1; i < this.numX; i++) {
+            for (var j = 1; j < this.numY - 1; j++) {
+              if (this.s[i * n + j] != 0.0 && this.s[i * n + j - 1] != 0.0)
+                this.v[i * n + j] += gravity * dt;
+            }
+          }
+        }
+
+        Coriolis(dt, C) {
+          // This function updates the velocity vector by applying the Coriolis effect.
+          var n = this.numY;
+          for (var i = 1; i < this.numX; i++) {
+            for (var j = 1; j < this.numY - 1; j++) {
+              if (this.s[i * n + j] != 0.0 && this.s[i * n + j - 1] != 0.0) {
+                this.u[i * n + j] += C * (j - n / 2) * this.v[i * n + j] * dt; //original
+                //this.u[i * n + j] += C * (j-n/2) * dt; // simplified
+                // U accelerates when going further up from axis.
+                // U accelerates negatively when going further down from axis.
+                this.v[i * n + j] -= C * (j - n / 2) * this.u[i * n + j] * dt; //original
+                //this.v[i * n + j] -= C * (j-n/2)* dt;
+              }
+              // V negatively accelerates when going further up from axis.
+              // V positively accelerates when going further down from axis.
+              // Flow always tends to deflect towards the axis! ! !
+            }
+          }
+        }
+
+        solveIncompressibility(numIters, dt) {
+          var n = this.numY;
+          var cp = (this.density * this.h) / dt;
+
+          for (var iter = 0; iter < numIters; iter++) {
+            for (var i = 1; i < this.numX - 1; i++) {
+              for (var j = 1; j < this.numY - 1; j++) {
+                if (this.s[i * n + j] == 0.0) continue;
+
+                var s = this.s[i * n + j];
+                var sx0 = this.s[(i - 1) * n + j];
+                var sx1 = this.s[(i + 1) * n + j];
+                var sy0 = this.s[i * n + j - 1];
+                var sy1 = this.s[i * n + j + 1];
+                var s = sx0 + sx1 + sy0 + sy1;
+                if (s == 0.0) continue;
+
+                var div =
+                  this.u[(i + 1) * n + j] -
+                  this.u[i * n + j] +
+                  this.v[i * n + j + 1] -
+                  this.v[i * n + j];
+
+                var p = -div / s;
+                p *= scene.overRelaxation;
+                this.p[i * n + j] += cp * p;
+
+                this.u[i * n + j] -= sx0 * p;
+                this.u[(i + 1) * n + j] += sx1 * p;
+                this.v[i * n + j] -= sy0 * p;
+                this.v[i * n + j + 1] += sy1 * p;
+              }
+            }
+          }
+        }
+
+        extrapolate() {
+          var n = this.numY;
+          for (var i = 0; i < this.numX; i++) {
+            this.u[i * n + 0] = this.u[i * n + 1];
+            this.u[i * n + this.numY - 1] = this.u[i * n + this.numY - 2];
+          }
+          for (var j = 0; j < this.numY; j++) {
+            this.v[0 * n + j] = this.v[1 * n + j];
+            this.v[(this.numX - 1) * n + j] = this.v[(this.numX - 2) * n + j];
+          }
+        }
+
+        sampleField(x, y, field) {
+          var n = this.numY;
+          var h = this.h;
+          var h1 = 1.0 / h;
+          var h2 = 0.5 * h;
+
+          x = Math.max(Math.min(x, this.numX * h), h);
+          y = Math.max(Math.min(y, this.numY * h), h);
+
+          var dx = 0.0;
+          var dy = 0.0;
+
+          var f;
+
+          switch (field) {
+            case U_FIELD:
+              f = this.u;
+              dy = h2;
+              break;
+            case V_FIELD:
+              f = this.v;
+              dx = h2;
+              break;
+            case S_FIELD:
+              f = this.m;
+              dx = h2;
+              dy = h2;
+              break;
+          }
+
+          var x0 = Math.min(Math.floor((x - dx) * h1), this.numX - 1);
+          var tx = (x - dx - x0 * h) * h1;
+          var x1 = Math.min(x0 + 1, this.numX - 1);
+
+          var y0 = Math.min(Math.floor((y - dy) * h1), this.numY - 1);
+          var ty = (y - dy - y0 * h) * h1;
+          var y1 = Math.min(y0 + 1, this.numY - 1);
+
+          var sx = 1.0 - tx;
+          var sy = 1.0 - ty;
+
+          var val =
+            sx * sy * f[x0 * n + y0] +
+            tx * sy * f[x1 * n + y0] +
+            tx * ty * f[x1 * n + y1] +
+            sx * ty * f[x0 * n + y1];
+
+          return val;
+        }
+
+        avgU(i, j) {
+          var n = this.numY;
+          var u =
+            (this.u[i * n + j - 1] +
+              this.u[i * n + j] +
+              this.u[(i + 1) * n + j - 1] +
+              this.u[(i + 1) * n + j]) *
+            0.25;
+          return u;
+        }
+
+        avgV(i, j) {
+          var n = this.numY;
+          var v =
+            (this.v[(i - 1) * n + j] +
+              this.v[i * n + j] +
+              this.v[(i - 1) * n + j + 1] +
+              this.v[i * n + j + 1]) *
+            0.25;
+          return v;
+        }
+
+        advectVel(dt) {
+          this.newU.set(this.u);
+          this.newV.set(this.v);
+
+          var n = this.numY;
+          var h = this.h;
+          var h2 = 0.5 * h;
+
+          for (var i = 1; i < this.numX; i++) {
+            for (var j = 1; j < this.numY; j++) {
+              cnt++;
+
+              // u component
+              if (
+                this.s[i * n + j] != 0.0 &&
+                this.s[(i - 1) * n + j] != 0.0 &&
+                j < this.numY - 1
+              ) {
+                var x = i * h;
+                var y = j * h + h2;
+                var u = this.u[i * n + j];
+                var v = this.avgV(i, j);
+                //						var v = this.sampleField(x,y, V_FIELD);
+                x = x - dt * u;
+                y = y - dt * v;
+                u = this.sampleField(x, y, U_FIELD);
+                this.newU[i * n + j] = u;
+              }
+              // v component
+              if (
+                this.s[i * n + j] != 0.0 &&
+                this.s[i * n + j - 1] != 0.0 &&
+                i < this.numX - 1
+              ) {
+                var x = i * h + h2;
+                var y = j * h;
+                var u = this.avgU(i, j);
+                //						var u = this.sampleField(x,y, U_FIELD);
+                var v = this.v[i * n + j];
+                x = x - dt * u;
+                y = y - dt * v;
+                v = this.sampleField(x, y, V_FIELD);
+                this.newV[i * n + j] = v;
+              }
+            }
+          }
+
+          this.u.set(this.newU);
+          this.v.set(this.newV);
+        }
+
+        advectSmoke(dt) {
+          this.newM.set(this.m);
+
+          var n = this.numY;
+          var h = this.h;
+          var h2 = 0.5 * h;
+
+          for (var i = 1; i < this.numX - 1; i++) {
+            for (var j = 1; j < this.numY - 1; j++) {
+              if (this.s[i * n + j] != 0.0) {
+                var u = (this.u[i * n + j] + this.u[(i + 1) * n + j]) * 0.5;
+                var v = (this.v[i * n + j] + this.v[i * n + j + 1]) * 0.5;
+                var x = i * h + h2 - dt * u;
+                var y = j * h + h2 - dt * v;
+
+                this.newM[i * n + j] = this.sampleField(x, y, S_FIELD);
+              }
+            }
+          }
+          this.m.set(this.newM);
+        }
+
+        // ----------------- end of simulator ------------------------------
+
+        simulate(dt, gravity, numIters, C) {
+          // this.integrate(dt, gravity);
+
+          this.p.fill(0.0);
+          this.solveIncompressibility(numIters, dt);
+          this.Coriolis(dt, C / 2);
+          this.extrapolate();
+
+          this.advectVel(dt);
+          this.Coriolis(dt, C / 2);
+          this.advectSmoke(dt);
+        }
+      }
+
+      var scene = {
+        gravity: -9.81,
+        C: 0.0,
+        dt: 1.0 / 240.0, // Original: 1.0 / 120.0
+        numIters: 100,
+        frameNr: 0,
+        overRelaxation: 1.9,
+        obstacleX: 0.0,
+        obstacleY: 0.0,
+        blocks: [],
+        nextblock: null,
+        inletTop: null,
+        inletBottom: null,
+        disk: null,
+        topBaffle: null,
+        bottomBaffle: null,
+        obstacleRadius: 0.05,
+        paused: false,
+        sceneNr: 0,
+        showObstacle: false,
+        showStreamlines: false,
+        showVelocities: false,
+        showPressure: false,
+        showSmoke: false,
+        fluid: null,
+      };
+
+      function setupScene() {
+        scene.obstacleRadius = 0.05;
+        scene.overRelaxation = 1.9;
+
+        scene.dt = 1.0 / 60.0; // original
+        // scene.dt = 0.1;  // test
+
+        scene.numIters = 40;
+
+        var res = 72;
+
+        var domainHeight = 1.0;
+        var domainWidth = (domainHeight / simHeight) * simWidth;
+        var h = domainHeight / res;
+
+        var numX = Math.floor(domainWidth / h);
+        var numY = Math.floor(domainHeight / h);
+
+        var density = 1.0; // original: 1000
+        console.log(numX, numY);
+        f = scene.fluid = new Fluid(density, numX, numY, h);
+        console.log("scene numy", domainWidth, simHeight, simWidth);
+        half = numY / 2;
+        scene.inletBottom = new rect(0.05, 0, 0.05, 0.25);
+
+        var n = f.numY;
+
+        var inVel = 0.5; //0.05 // original: 1.6
+        for (var i = 0; i < f.numX; i++) {
+          for (var j = 0; j < f.numY; j++) {
+            var s = 1.0; // fluid
+            if (i == 0 || j == 0 || j == f.numY - 1)
+              // Set walls at the top, bottom and left.
+              //if (i == 0) // Set wall only at left boundary (flow entrance)
+              s = 0.0; // solid
+            // If I remove this wall, the computation becomes super slow.
+            f.s[i * n + j] = s; // Set fluid elsewhere.
+
+            if (i == 1) {
+              // Set initial velocity at first column.
+              f.u[i * n + j] = inVel;
+            }
+          }
+
+          var pipeH = 0.1 * f.numY; // Set dimensions of the wind tunnel.
+          var minJ = Math.floor(0.5 * f.numY - 0.5 * pipeH);
+          var maxJ = Math.floor(0.5 * f.numY + 0.5 * pipeH);
+
+          for (var j = minJ; j < maxJ; j++) f.m[j] = 0.0;
+
+          setObstacle(2, 0.5, true);
+
+          scene.gravity = 0.0;
+          scene.C = 0.01; // 0.004
+          scene.showPressure = false;
+          scene.showSmoke = true;
+          scene.showStreamlines = true;
+          scene.showVelocities = false;
+        }
+
+        document.getElementById("streamButton").checked = scene.showStreamlines;
+        document.getElementById("velocityButton").checked =
+          scene.showVelocities;
+        document.getElementById("pressureButton").checked = scene.showPressure;
+        document.getElementById("smokeButton").checked = scene.showSmoke;
+      }
+
+      // draw -------------------------------------------------------
+
+      function setColor(r, g, b) {
+        c.fillStyle = `rgb(
+			${Math.floor(255 * r)},
+			${Math.floor(255 * g)},
+			${Math.floor(255 * b)})`;
+        c.strokeStyle = `rgb(
+			${Math.floor(255 * r)},
+			${Math.floor(255 * g)},
+			${Math.floor(255 * b)})`;
+      }
+
+      function getSciColor(val, minVal, maxVal) {
+        val = Math.min(Math.max(val, minVal), maxVal - 0.0001);
+        var d = maxVal - minVal;
+        val = d == 0.0 ? 0.5 : (val - minVal) / d;
+        var m = 0.25;
+        var num = Math.floor(val / m);
+        var s = (val - num * m) / m;
+        var r, g, b;
+
+        switch (num) {
+          case 0:
+            r = 0.0;
+            g = s;
+            b = 1.0;
+            break;
+          case 1:
+            r = 0.0;
+            g = 1.0;
+            b = 1.0 - s;
+            break;
+          case 2:
+            r = s;
+            g = 1.0;
+            b = 0.0;
+            break;
+          case 3:
+            r = 1.0;
+            g = 1.0 - s;
+            b = 0.0;
+            break;
+        }
+
+        return [255 * r, 255 * g, 255 * b, 255];
+      }
+
+      function draw() {
+        myTimer++;
+        //console.log(myTimer);
+
+        const off = offscreen.getContext("2d"); // get offscreen canvas
+        off.translate(0, 72);
+        off.scale(1, -1);
+        off.drawImage(img, 0, 0, 1920, 1080, 0, 0, 128, 72); // draw image to offscreen canvas
+        off.translate(0, 72);
+        off.scale(1, -1);
+        const myPixels = off.getImageData(0, 0, 128, 72); //get pixel data
+        const pData = myPixels.data; // make array of pixeldata
+
+        setField();
+
+        //c.clearRect(0, 0, canvas.width, canvas.height);
+        c.beginPath();
+        c.rect(0, 0, canvas.width, canvas.height);
+        c.fillStyle = "rgba(0,0,0,1.0)"; //"rgba(0,0,0,0.1)";//"dark blue";
+        c.fill();
+
+        c.fillStyle = "#FF0000";
+        f = scene.fluid;
+        n = f.numY;
+
+        var cellScale = 1.1;
+
+        var h = f.h;
+
+        minP = f.p[0];
+        maxP = f.p[0];
+
+        for (var i = 0; i < f.numCells; i++) {
+          minP = Math.min(minP, f.p[i]);
+          maxP = Math.max(maxP, f.p[i]);
+        }
+
+        id = c.getImageData(0, 0, canvas.width, canvas.height);
+
+        var color = [255, 255, 255, 255];
+
+        for (var i = 0; i < f.numX; i++) {
+          for (var j = 0; j < f.numY; j++) {
+            if (scene.showPressure) {
+              var p = f.p[i * n + j];
+              var s = f.m[i * n + j];
+              color = getSciColor(p, minP, maxP);
+              if (scene.showSmoke) {
+                color[0] = Math.max(0.0, color[0] - 255 * s);
+                color[1] = Math.max(0.0, color[1] - 255 * s);
+                color[2] = Math.max(0.0, color[2] - 255 * s);
+              }
+            } else if (scene.showSmoke) {
+              var s = f.m[i * n + j];
+              color[0] = 255 * s;
+              color[1] = 255 * s;
+              color[2] = 255 * s;
+              if (scene.sceneNr == 2) color = getSciColor(s, 0.0, 1.0);
+            } else if (f.s[i * n + j] == 0.0) {
+              color[0] = 0;
+              color[1] = 0;
+              color[2] = 0;
+            }
+
+            var x = Math.floor(cX(i * h));
+            var y = Math.floor(cY((j + 1) * h));
+            var cx = Math.floor(cScale * cellScale * h) + 1;
+            var cy = Math.floor(cScale * cellScale * h) + 1;
+
+            r = color[0];
+            g = color[1];
+            b = color[2];
+
+            for (var yi = y; yi < y + cy; yi++) {
+              var p = 4 * (yi * canvas.width + x);
+
+              for (var xi = 0; xi < cx; xi++) {
+                id.data[p++] = r;
+                id.data[p++] = g;
+                id.data[p++] = b;
+                id.data[p++] = 255;
+              }
+            }
+          }
+        }
+
+        //c.putImageData(id, 0, 0); // this used to be in!
+
+        if (scene.showVelocities) {
+          c.strokeStyle = "#000000";
+          scale = 0.02;
+
+          for (var i = 0; i < f.numX; i++) {
+            for (var j = 0; j < f.numY; j++) {
+              var u = f.u[i * n + j];
+              var v = f.v[i * n + j];
+
+              c.beginPath();
+
+              x0 = cX(i * h);
+              x1 = cX(i * h + u * scale);
+              y = cY((j + 0.5) * h);
+
+              c.moveTo(x0, y);
+              c.lineTo(x1, y);
+              c.stroke();
+
+              x = cX((i + 0.5) * h);
+              y0 = cY(j * h);
+              y1 = cY(j * h + v * scale);
+
+              c.beginPath();
+              c.moveTo(x, y0);
+              c.lineTo(x, y1);
+              c.stroke();
+            }
+          }
+        }
+
+        if (scene.showStreamlines) {
+          var segLen = f.h * 0.52; //f.h * 0.1;
+          var numSegs = 15; //15 old value
+          var long = 0.03;
+
+          c.strokeStyle = "#FF0033";
+
+          for (var i = 1; i < f.numX - 1; i += 4) {
+            for (var j = 1; j < f.numY - 1; j += 4) {
+              var x = (i + 0.5) * f.h;
+              var y = (j + 0.5) * f.h;
+
+              c.beginPath();
+              c.lineWidth = 1;
+              c.moveTo(cX(x), cY(y));
+
+              for (var n = 0; n < numSegs; n++) {
+                var u = f.sampleField(x, y, U_FIELD);
+                var v = f.sampleField(x, y, V_FIELD);
+                l = Math.sqrt(u * u + v * v);
+                // x += u/l * segLen;
+                // y += v/l * segLen;
+                x += u * long; //0.002; //old correct value = 0.01
+                y += v * long; //0.002; //old correct value = 0.01
+                if (x > f.numX * f.h) break;
+
+                c.lineTo(cX(x), cY(y));
+              }
+              c.stroke();
+              //
+              //myParticle.update();
+            }
+          }
+        }
+
+        // Show Obstacles (always)
+
+        // First Object (fixed)
+        // Modify parameters
+        /*r1 = 0.02;
+        x1 = 0.2;
+        y1 = 0.5;
+
+        c.strokeW;
+        r = r1 + f.h;
+        if (scene.showPressure) c.fillStyle = "#000000";
+        else c.fillStyle = "#DDDDDD";
+        c.beginPath();
+        c.arc(cX(x1), cY(y1), cScale * r, 0.0, 2.0 * Math.PI);
+        c.closePath();
+        c.fill();
+        c.lineWidth = 3.0;
+        c.strokeStyle = "#000000";
+        c.beginPath();
+        c.arc(cX(x1), cY(y1), cScale * r, 0.0, 2.0 * Math.PI);
+        c.closePath();
+        c.stroke();
+        c.lineWidth = 1.0;
+
+        // Second object (fixed)
+        // Modify parameters
+        r2 = 0.05;
+        x2 = 0.5;
+        y2 = 0.5;
+
+        r = r2 + f.h;
+        c.beginPath();
+        c.arc(cX(x2), cY(y2), cScale * r, 0.0, 2.0 * Math.PI);
+        c.closePath();
+        c.fill();
+        c.lineWidth = 3.0;
+        c.strokeStyle = "#000000";
+        c.beginPath();
+        c.arc(cX(x2), cY(y2), cScale * r, 0.0, 2.0 * Math.PI);
+        c.closePath();
+        c.stroke();
+        c.lineWidth = 1.0;
+		*/
+
+        if (scene.showPressure) {
+          var s =
+            "pressure: " + minP.toFixed(0) + " - " + maxP.toFixed(0) + " N/m";
+          c.fillStyle = "#000000";
+          c.font = "16px Arial";
+          c.fillText(s, 10, 35);
+        }
+
+        /*c.drawImage(
+              img,
+              0,
+              0,
+              128,
+              72,
+              0,
+              0,
+              128,
+              72
+            );*/
+
+        c.putImageData(myPixels, 0, 0, 128, 72, 0, 0, 128, 72);
+
+        for (var i = 1; i < f.numX - 2; i++) {
+          for (var j = 1; j < f.numY - 2; j++) {
+            let v = 1.0;
+            /*if (i % 10 == 0 && j % 3 == 0) {
+              v = 0;
+            }*/
+
+            ///f.s[i * n + j] = v;
+
+            // (x * scl + y * scl * cols * scl) * 4;
+            let p = pData[(i + j * f.numX) * 4];
+            //console.log(p);
+
+            if (p != undefined && p < obsThreshold) {
+              //console.log("black");
+              // draw out what your input pixels are looking like in the canvas
+              c.beginPath();
+              c.rect(i, j, 1, 1);
+              c.fillStyle = "red";
+              c.fill();
+            } else {
+              c.beginPath();
+              c.rect(i, j, 1, 1);
+              c.fillStyle = "blue";
+              c.fill();
+            }
+          }
+        }
+
+        // render particle
+        //myParticle.update();
+
+        // fix this... don't need to iterate whole fluid, just get the correct x, y for current position of particle
+        //---//for (var i = 1; i < f.numX - 1; i += 2) {
+        //---//for (var j = 1; j < f.numY - 1; j += 2) {
+        //---//var x = (i + 0.5) * f.h;
+        //---//var y = (j + 0.5) * f.h;
+
+        //var x = (myParticle.x/10 + 0.5);// * f.h;
+        //var y = (myParticle.y/10 + 0.5);// * f.h;
+
+        var x = (72 + 0.5) * f.h;
+        var y = (36 + 0.5) * f.h;
+
+        var x2 = (65 + 0.5) * f.h;
+        var y2 = (50 + 0.5) * f.h;
+
+        var x3 = myParticle.x * f.h;
+        var y3 = myParticle.y * f.h;
+        //console.log(myParticle.x, myParticle.y);
+
+        //c.beginPath();
+        //c.moveTo(cX(x), cY(y));
+
+        /*for (var n = 0; n < numSegs; n++) {
+                var u = f.sampleField(x, y, U_FIELD);
+                var v = f.sampleField(x, y, V_FIELD);
+                l = Math.sqrt(u * u + v * v);
+                // x += u/l * segLen;
+                // y += v/l * segLen;
+                x += u * 0.002;//0.01; //old correct value
+                y += v * 0.002;//0.01; //old correct value
+                if (x > f.numX * f.h) break;
+
+                c.lineTo(cX(x), cY(y));
+              }*/
+        //c.stroke();
+        //
+        //myParticle.update();
+        var u = f.sampleField(x, y, U_FIELD);
+        var v = f.sampleField(x, y, V_FIELD);
+        //
+        var u2 = f.sampleField(x2, y2, U_FIELD);
+        var v2 = f.sampleField(x2, y2, V_FIELD);
+        //
+        var u3 = f.sampleField(x3, y3, U_FIELD);
+        var v3 = f.sampleField(x3, y3, V_FIELD);
+        //myParticle.x = cX(x2);
+        //myParticle.y = y2*720;//cY(y2);
+
+        //
+
+        //}
+        //}
+        //myParticle.checkEdges();
+        //myParticle.display(c);
+
+        //console.log(u2,v2);
+
+        // direction indicators
+        /*
+        c.beginPath();
+        c.moveTo(cX(x), cY(y));
+        x += u * 0.01;//0.01; //old correct value
+        y += v * 0.01;//0.01; //old correct value
+        c.lineTo(cX(x), cY(y));
+        c.strokeStyle = "aqua";
+        c.lineWidth = 3;
+        c.stroke();
+
+        c.beginPath();
+        c.moveTo(cX(x2), cY(y2));
+        x2 += u2 * 0.01;//0.01; //old correct value
+        y2 += v2 * 0.01;//0.01; //old correct value
+        c.lineTo(cX(x2), cY(y2));
+        c.strokeStyle = "aqua";
+        c.lineWidth = 3;
+        c.stroke();
+        */
+
+        // render particle as line
+        /*c.beginPath();
+        c.moveTo(cX(x3), cY(y3));
+        x3 += u3 * 0.005;//0.01; //old correct value
+        y3 += v3 * 0.005;//0.01; //old correct value
+        c.lineTo(cX(x3), cY(y3));
+        myParticle.x = x3/f.h;//cX(x2);
+        myParticle.y = y3/f.h;//cY(y2);
+        c.strokeStyle = "SpringGreen";
+        c.lineWidth = 3;
+        c.stroke();
+        */
+
+        //myParticle.checkEdges();
+        //myParticle.display(c);
+
+        for (let i = 0; i < allParticles.length; i++) {
+          allParticles[i].checkEdges();
+          allParticles[i].display(c);
+        }
+
+        /*x3 += u3 * 0.005;//0.01; //old correct value
+        y3 += v3 * 0.005;//0.01; //old correct value
+        myParticle.x = x3/f.h;//cX(x2);
+        myParticle.y = y3/f.h;//cY(y2);
+        myParticle.checkEdges();
+        myParticle.display(c);
+        */
+      }
+
+      function setObstacle(x, y, reset) {
+        var vx = 0.0;
+        var vy = 0.0;
+
+        if (!reset) {
+          vx = (x - scene.obstacleX) / scene.dt;
+          vy = (y - scene.obstacleY) / scene.dt;
+        }
+
+        scene.obstacleX = x;
+        scene.obstacleY = y;
+        var r = scene.obstacleRadius;
+        var f = scene.fluid;
+        var n = f.numY;
+        var cd = Math.sqrt(2) * f.h;
+
+        for (var i = 1; i < f.numX - 2; i++) {
+          for (var j = 1; j < f.numY - 2; j++) {
+            f.s[i * n + j] = 1.0;
+
+            dx = (i + 0.5) * f.h - x;
+            dy = (j + 0.5) * f.h - y;
+
+            if (dx * dx + dy * dy < r * r) {
+              f.s[i * n + j] = 0.0;
+              if (scene.sceneNr == 2)
+                f.m[i * n + j] = 0.5 + 0.5 * Math.sin(0.1 * scene.frameNr);
+              else f.m[i * n + j] = 1.0;
+              f.u[i * n + j] = vx;
+              f.u[(i + 1) * n + j] = vx;
+              f.v[i * n + j] = vy;
+              f.v[i * n + j + 1] = vy;
+            }
+          }
+        }
+      }
+
+      function set2Obstacles(x1, y1, r1, x2, y2, r2) {
+        var f = scene.fluid;
+        var n = f.numY;
+        var cd = Math.sqrt(2) * f.h;
+
+        for (var i = 1; i < f.numX - 2; i++) {
+          for (var j = 1; j < f.numY - 2; j++) {
+            f.s[i * n + j] = 1.0;
+
+            dx1 = (i + 0.5) * f.h - x1;
+            dy1 = (j + 0.5) * f.h - y1;
+            dx2 = (i + 0.5) * f.h - x2;
+            dy2 = (j + 0.5) * f.h - y2;
+            // Pitagoras
+            if (
+              dx1 * dx1 + dy1 * dy1 < r1 * r1 ||
+              dx2 * dx2 + dy2 * dy2 < r2 * r2
+            ) {
+              f.s[i * n + j] = 0.0;
+              f.m[i * n + j] = 1.0;
+              f.u[i * n + j] = 0;
+              f.u[(i + 1) * n + j] = 0;
+              f.v[i * n + j] = 0;
+              f.v[i * n + j + 1] = 0;
+            }
+          }
+        }
+      }
+
+      function setField() {
+        var f = scene.fluid;
+        var n = f.numY;
+        var cd = Math.sqrt(2) * f.h;
+
+        const off = offscreen.getContext("2d");
+        //off.drawImage(img, 0, 0, 1920, 1080, 0, 0, 128, 72); // don't need to draw image twice it is drawn in draw() already but this might be the preferred place eventually
+        // get pixel data
+        const myPixels = off.getImageData(0, 0, 128, 72);
+        const pData = myPixels.data;
+
+        let smallArr = new Array();
+        let sat = 0;
+        //console.log(pData);
+        let v = 3;
+        for (let pl = 0; pl < pData.length; pl += 4) {
+          v = 1; // fluid
+          let pv = pData[pl];
+          //console.log(pv)
+
+          if (pv < obsThreshold) {
+            v = 0; // set dark ones solid
+          }
+          //console.log(v);
+          smallArr[sat] = v;
+          //if(v==0) {
+          //console.log(pl, pData[pl], "V", v, "smallArr", sat, smallArr[sat]);
+          //}
+          //console.log(sat);
+          sat++;
+        }
+
+        //console.log("sat", sat, smallArr);
+        //console.log("f total",(f.numX - 2) * n + (f.numY - 2));
+
+        // v = 1 = fluid
+        // v = 0 = solid
+
+        for (var i = 1; i < f.numX - 2; i++) {
+          for (var j = 1; j < f.numY - 1; j++) {
+            /*let v = 1.0;
+            if (i % 10 == 0 && j % 3 == 0) {
+              v = 0;
+            }*/
+
+            ///f.s[i * n + j] = v;
+
+            // (x * scl + y * scl * cols * scl) * 4;
+            /*let p = pData[(i + j*f.numX) *4];
+			//if(i==1 && j==1) {
+        //console.log("p= ",p);
+      //}
+
+			if(p>=10) {
+				p = 1;
+        
+			} else {
+				p = 0;
+        //console.log(p);
+			}
+
+			if(i > 10 && i<50 && j>50 && j<70) {
+				p = 0;
+			}
+
+			//console.log(p);*/
+
+            //p = smallArr[(i+j*f.numX)];
+            //console.log(p);
+
+            let pos = Math.min(smallArr.length - 1, i + j * f.numX);
+
+            f.s[i * n + j] = smallArr[pos]; //smallArr[i + j * f.numX]; //p;
+            if (smallArr[pos] == 0) {
+              f.s[i * n + j] = 0.0;
+              f.m[i * n + j] = 1.0;
+              //console.log(f.u[(i) * n + j]);
+              if (myTimer > myElapsed) {
+                // need to remove this and write function to only start solving once image is fully loaded
+                f.u[i * n + j] = 0.0; //creates weird vortexes left over from arms, but maybe just at right boundary
+              }
+              f.u[(i + 1) * n + j] = 0.0;
+              f.v[i * n + j] = 0;
+              f.v[i * n + j + 1] = 0;
+            }
+
+            /*dx1 = (i + 0.5) * f.h - x1;
+				dy1 = (j + 0.5) * f.h - y1;
+				dx2 = (i + 0.5) * f.h - x2;
+				dy2 = (j + 0.5) * f.h - y2;
+				// Pitagoras
+				if (dx1 * dx1 + dy1 * dy1 < r1 * r1 || dx2 * dx2 + dy2 * dy2 < r2 * r2 ) {
+					f.s[i*n + j] = 0.0;
+					f.m[i*n + j] = 1.0;
+					f.u[i*n + j] = 0;
+					f.u[(i+1)*n + j] = 0;
+					f.v[i*n + j] = 0;
+					f.v[i*n + j+1] = 0;
+				}*/
+          }
+        }
+      }
+
+      // interaction -------------------------------------------------------
+
+      var mouseDown = false;
+
+      function startDrag(x, y) {
+        let bounds = canvas.getBoundingClientRect();
+
+        let mx = x - bounds.left - canvas.clientLeft;
+        let my = y - bounds.top - canvas.clientTop;
+        mouseDown = true;
+
+        x = mx / cScale;
+        y = (canvas.height - my) / cScale;
+
+        setObstacle(x, y, true);
+      }
+
+      function drag(x, y) {
+        if (mouseDown) {
+          let bounds = canvas.getBoundingClientRect();
+          let mx = x - bounds.left - canvas.clientLeft;
+          let my = y - bounds.top - canvas.clientTop;
+          x = mx / cScale;
+          y = (canvas.height - my) / cScale;
+          setObstacle(x, y, false);
+        }
+      }
+
+      function endDrag() {
+        mouseDown = false;
+      }
+
+      // Interaction is ommited because objetcs are fixed on this code.
+
+      // canvas.addEventListener('mousedown', event => {
+      // 	startDrag(event.x, event.y);
+      // });
+
+      // canvas.addEventListener('mouseup', event => {
+      // 	endDrag();
+      // });
+
+      // canvas.addEventListener('mousemove', event => {
+      // 	drag(event.x, event.y);
+      // });
+
+      canvas.addEventListener("touchstart", (event) => {
+        startDrag(event.touches[0].clientX, event.touches[0].clientY);
+      });
+
+      canvas.addEventListener("touchend", (event) => {
+        endDrag();
+      });
+
+      canvas.addEventListener(
+        "touchmove",
+        (event) => {
+          event.preventDefault();
+          event.stopImmediatePropagation();
+          drag(event.touches[0].clientX, event.touches[0].clientY);
+        },
+        { passive: false }
+      );
+
+      document.addEventListener("keydown", (event) => {
+        switch (event.key) {
+          case "p":
+            scene.paused = !scene.paused;
+            break;
+          case "m":
+            scene.paused = false;
+            simulate();
+            scene.paused = true;
+            break;
+        }
+      });
+
+      function toggleStart() {
+        var button = document.getElementById("startButton");
+        if (scene.paused) button.innerHTML = "Stop";
+        else button.innerHTML = "Start";
+        scene.paused = !scene.paused;
+      }
+
+      // main -------------------------------------------------------
+
+      function simulate() {
+        if (!scene.paused)
+          scene.fluid.simulate(
+            scene.dt,
+            scene.gravity,
+            scene.numIters,
+            scene.C
+          );
+        scene.frameNr++;
+      }
+
+      //Run
+      function update() {
+        simulate();
+        draw();
+        requestAnimationFrame(update);
+      }
+
+      setupScene();
+      update();
+    </script>
+  </body>
+</html>
