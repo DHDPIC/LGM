@@ -238,13 +238,13 @@
                 this.u[i * n + j] += C * (j - n / 2) * this.v[i * n + j] * dt; //og
                 
                 //this.u[i * n + j] += C * (j - n / 2) * dt;
-                //this.u[i * n + j] = Math.min(this.u[i * n + j], 0.5);
+                this.u[i * n + j] = Math.min(this.u[i * n + j], 0.5);
                 // U accelerates when going further up from axis.
                 // U accelerates negatively when going further down from axis.
                 this.v[i * n + j] -= C * (j - n / 2) * this.u[i * n + j] * dt; //og
                 
                 //this.v[i * n + j] -= C * (j - n / 2) * dt;
-                //this.v[i * n + j] = Math.min(this.v[i * n + j], 0.5);
+                this.v[i * n + j] = Math.min(this.v[i * n + j], 0.5);
               }
               // V negatively accelerates when going further up from axis.
               // V positively accelerates when going further down from axis.
