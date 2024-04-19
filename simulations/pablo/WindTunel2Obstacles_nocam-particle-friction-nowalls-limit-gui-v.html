@@ -193,7 +193,7 @@
         constructor() {
           this.x = 0; //Math.random() * 128;
           this.y = Math.random() * 72;
-          this.life = 8000 + Math.random() * 400;
+          this.life = 8000 + Math.random() * 40;
         }
 
         display(c) {
@@ -228,12 +228,17 @@
             this.y = Math.random() * 72;
             this.life = 8000 + Math.random() * 400;
           }
+        }
 
+        checkLife() {
           this.life--;
           if (this.life <= 0) {
             this.x = 0; //Math.random()*128;
             this.y = Math.random() * 72;
             this.life = 8000 + Math.random() * 400;
+            //
+            this.x = 0; //Math.random()*8;
+            this.y = Math.random() * 72;
           }
         }
       }
@@ -1042,7 +1047,11 @@
         //myParticle.display(c);
 
         for (let i = 0; i < allParticles.length; i++) {
+          if(i==0) {
+            console.log(allParticles[i].life);
+          }
           allParticles[i].checkEdges();
+          allParticles[i].checkLife();
           allParticles[i].display(c);
         }
 
